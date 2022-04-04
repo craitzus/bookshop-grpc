@@ -1,10 +1,10 @@
 version: '3.8'
 
 services:
-  bookshop-service:
-    image: craitz/bookshop-service:2.8
-    ports:
-      - 3000:3000
+  # bookshop-service:
+  #   image: craitz/bookshop-service:2.8
+  #   ports:
+  #     - 3000:3000
   mongodb:
     image: mongo
     ports:

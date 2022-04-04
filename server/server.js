@@ -1,30 +1,64 @@
-const path = require('path')
-const grpc = require('@grpc/grpc-js')
-const fs = require('fs')
-// const grpc = require('grpc');
-const protoLoader = require('@grpc/proto-loader')
-const filepath = path.resolve(__dirname, '../proto/bookshop.proto')
-const packageDefinition = protoLoader.loadSync(filepath)
-const BookshopDefinition = grpc.loadPackageDefinition(packageDefinition)
+// config
+require('dotenv').config()
 
-const caCertPath = path.resolve(__dirname, '../credentials/ca.cert')
-const serverCertPath = path.resolve(__dirname, '../credentials/server.cert')
-const serverKeyPath = path.resolve(__dirname, '../credentials/server.key')
+// Node.js libs 
+const path = require('path');
+const fs = require('fs');
 
-const mongodb = require('mongodb')
-const mongoClient = mongodb.MongoClient
+// filepaths
+const filepath = path.resolve(__dirname, '../proto/bookshop.proto');
+const caCertPath = path.resolve(__dirname, './libs/openssl/ca.cert');
+const serverCertPath = path.resolve(__dirname, './libs/openssl/server.cert');
+const serverKeyPath = path.resolve(__dirname, './libs/openssl/server.key');
+const keycloakPubKeyPath = path.resolve(__dirname, './libs/jwt/keycloak-pk.pem');
+
+//gRPC libs
+const grpc = require('@grpc/grpc-js');
+const protoLoader = require('@grpc/proto-loader');
+
+// load protobuf definition
+const packageDefinition = protoLoader.loadSync(filepath);
+const BookshopDefinition = grpc.loadPackageDefinition(packageDefinition);
+
+// MongoDB libs & vars
+const mongodb = require('mongodb');
+const mongoClient = mongodb.MongoClient;
 const ObjectId = mongodb.ObjectId; 
 let db
 
-const HOST = '0.0.0.0'
-const PORT = 3000
-const DB_HOST = '127.0.0.1'
-const DB_PORT = 27017
-const DB_USER = 'admin'
-const DB_PASSWORD = 'password'
-const DATABASE_NAME = 'bookshop'
+// jwt validator
+const jwtValidator = require(path.resolve(__dirname, './libs/jwt/jwt-validator'));
+
+// unauthorized response
+const UNAUTHENTICATED_RESPONSE = {
+	code: grpc.status.UNAUTHENTICATED,
+	message: process.env.UNAUTHENTICATED_MESSAGE,
+}
+
+async function authorize(call) {
+	// no metadata
+	if (!call) return UNAUTHENTICATED_RESPONSE;	 
+	
+	// get the bearer token string
+	const token = call.metadata.get('Authorization')[0] && call.metadata.get('Authorization')[0].split(' ')[1];
+	
+	// no token
+	if (!token) return UNAUTHENTICATED_RESPONSE;
+
+	try {
+		// validate token
+		jwtValidator.validateWithPubKeyFile(token, keycloakPubKeyPath);
+	 } catch(err) {
+		 // unauthorized
+		return UNAUTHENTICATED_RESPONSE;
+	 }
+
+	 // no errors
+	return null
+}
 
 function mapBook(book) {
+	// return protobuf book
 	return !book ? {} : {
 		id: book._id,
 		title: book.title,
@@ -36,6 +70,7 @@ function mapBook(book) {
 }
 
 function getAllBooks() {
+	// get all books from MongoDB
 	return new Promise(function(resolve, reject) {
 		db.collection('books').find({}).toArray((err, result) => {
 			if (err) {
@@ -48,6 +83,7 @@ function getAllBooks() {
 }
 
 function findBook(id) {
+	// find a specific book in MongoDB
 	return new Promise(function(resolve, reject) {
 		db.collection('books').findOne({_id: new ObjectId(id)}, (err, result) => {
 			if (err) {
@@ -60,6 +96,7 @@ function findBook(id) {
 }
 
 function addBook(book) {
+	// insert a book in MongoDB
 	return new Promise(function(resolve, reject) {
 		db.collection('books').insertOne(book, (err, result) => {
 			if (err) {
@@ -72,6 +109,7 @@ function addBook(book) {
 }
 
 function removeBook(id) {
+	// remove a book from MongoDB
 	return new Promise(function(resolve, reject) {
 		db.collection('books').deleteOne({_id: new ObjectId(id)}, (err, result) => {
 			if (err) {
@@ -83,11 +121,18 @@ function removeBook(id) {
 	});
 }
 
-function List (_, cb) {
+async function List (call, cb) {
+	// authorization
+	const error = await authorize(call);
+	if (error) {
+		return cb(error);	
+	}
+
 	getAllBooks()
 	.then(res => {
 		return cb(null, {books: res})
 	}).catch(err => {
+		// unexpected error
 		return cb({
 			code: grpc.status.UNKNOWN,
 			message: err.message,
@@ -95,18 +140,26 @@ function List (_, cb) {
 	});
 }
 
-function Find (call, cb) {
+async function Find (call, cb) {
+	// authorization
+	const error = await authorize(call);
+	if (error) {
+		return cb(error);	
+	}
+
 	findBook(call.request.id)
 	.then(res => {
 		if (!res.id) {
+			// not found
 			return cb({
 				code: grpc.status.NOT_FOUND,
-				message: 'Not found',
+				message: 'Requested resource was not found',
 			});	
 		}
 
 		return cb(null, res)
 	}).catch(err => {
+		// unexpected error
 		return cb({
 			code: grpc.status.UNKNOWN,
 			message: err.message,
@@ -115,10 +168,17 @@ function Find (call, cb) {
 }
 
 function Add(call, cb) {
+	// authorization
+	const error = authorize(call);
+	if (error) {
+		return cb(error);	
+	}
+
 	addBook(call.request)
 	.then(res => {
 		return cb(null, res)
 	}).catch(err => {
+		// unexpected error
 		return cb({
 			code: grpc.status.UNKNOWN,
 			message: err.message,
@@ -127,10 +187,17 @@ function Add(call, cb) {
 }
 
 function Remove(call, cb) {
+	// authorization
+	const error = authorize(call);
+	if (error) {
+		return cb(error);	
+	}
+
 	removeBook(call.request.id)
 	.then(() => {
 		return cb(null, {})
 	}).catch(err => {
+		// unexpected error
 		return cb({
 			code: grpc.status.UNKNOWN,
 			message: err.message,
@@ -138,23 +205,24 @@ function Remove(call, cb) {
 	});
 }
 
-// mongoClient.connect(`mongodb://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}`, (err, client) => {
-mongoClient.connect(`mongodb://${DB_USER}:${DB_PASSWORD}@mongodb:${DB_PORT}`, (err, client) => {
+mongoClient.connect(`mongodb://${process.env.DB_USER}:${process.env.DB_PASSWORD}@${process.env.DB_HOST}:${process.env.DB_PORT}`, (err, client) => {
 	if (err) {
 		console.error('error connecting: ' + err.stack);
 		return;
 	}
 
-	console.log('connected to mongodb')
+	console.log('connected to mongodb!')
 
-	db = client.db(DATABASE_NAME)
+	// get database
+	db = client.db(process.env.DATABASE_NAME)
 
+	// create server
 	const server = new grpc.Server()
+	
+	// add protobuf service
 	server.addService(BookshopDefinition.BookshopService.service, {List, Find, Add, Remove})
 
-	grpc.ServerCredentials.createSsl
-
-	// server.bindAsync(`${HOST}:${PORT}`, grpc.ServerCredentials.createInsecure(), (err, port) => {
+	// server.bindAsync(`${process.env.HOST}:${process.env.PORT}`, grpc.ServerCredentials.createInsecure(), (err, port) => {
 	// 	if (err) {
 	// 		console.error('Error binding grpc: ' + err.stack);
 	// 		return;
@@ -164,7 +232,8 @@ mongoClient.connect(`mongodb://${DB_USER}:${DB_PASSWORD}@mongodb:${DB_PORT}`, (e
 	// 	console.log(`Server listening to port ${port}...`)
 	// })
 
-	server.bindAsync(`${HOST}:${PORT}`, grpc.ServerCredentials.createSsl(
+	// bind secure connection TLS
+	server.bindAsync(`${process.env.HOST}:${process.env.PORT}`, grpc.ServerCredentials.createSsl(
 		fs.readFileSync(caCertPath),
 		[{
 			cert_chain: fs.readFileSync(serverCertPath),
@@ -177,6 +246,7 @@ mongoClient.connect(`mongodb://${DB_USER}:${DB_PASSWORD}@mongodb:${DB_PORT}`, (e
 			return;
 		}
 	
+		// start server
 		server.start()
 		console.log(`Server listening to port ${port}...`)
 	})
