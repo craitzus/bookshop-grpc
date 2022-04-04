@@ -232,7 +232,7 @@ mongoClient.connect(`mongodb://${process.env.DB_USER}:${process.env.DB_PASSWORD}
 	// 	console.log(`Server listening to port ${port}...`)
 	// })
 
-	// bind secure connection TLS
+	// bind secure connection with TLS
 	server.bindAsync(`${process.env.HOST}:${process.env.PORT}`, grpc.ServerCredentials.createSsl(
 		fs.readFileSync(caCertPath),
 		[{
